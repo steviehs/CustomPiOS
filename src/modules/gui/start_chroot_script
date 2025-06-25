@@ -8,17 +8,19 @@ set -e
 
 source /common.sh
 
-unpack /filesystem/home/pi /home/pi pi
+unpack /filesystem/opt /opt/custompios pi
 unpack /filesystem/root_init /
+
+ln -s /opt/custompios/scripts /home/pi/scripts
 
 echo exit 101 > /usr/sbin/policy-rc.d
 chmod +x /usr/sbin/policy-rc.d
 
 apt-get update
-apt-get install -y --force-yes matchbox-window-manager xorg lightdm
+apt-get install -y --force-yes matchbox-window-manager xorg lightdm xinput
 if [ "$GUI_INCLUDE_ACCELERATION" == "yes" ]
     then
-        apt-get update
+        apt_update_skip
         apt-get -y --force-yes install xcompmgr libgl1-mesa-dri mesa-utils compton libconfig9
         
         # Hack to pass non-interactive install
@@ -36,5 +38,5 @@ if [ "$GUI_INCLUDE_ACCELERATION" == "yes" ]
         systemctl enable enable_gpu_first_boot.service
         
     else
-        echo "gpu_mem=128" >> /boot/config.txt
+        echo "gpu_mem=128" >> /"${BASE_BOOT_MOUNT_PATH}"/config.txt
 fi

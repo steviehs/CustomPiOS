@@ -1,0 +1,15 @@
+image: ghcr.io/guysoft/custompios:devel
+manifests:
+  - image: ghcr.io/guysoft/custompios:amd64
+    platform:
+      architecture: amd64
+      os: linux
+  - image: ghcr.io/guysoft/custompios:arm32v7
+    platform:
+      architecture: arm
+      os: linux
+      variant: v7
+  - image: ghcr.io/guysoft/custompios:arm64v8
+    platform:
+      architecture: arm64
+      os: linux

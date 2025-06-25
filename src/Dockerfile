@@ -1,22 +1,37 @@
-FROM debian:buster
+FROM debian:bookworm-backports
 
 MAINTAINER Guy Sheffer <guysoft at gmail dot com>
 
-RUN set -x \
-    && apt-get update && apt-get install -y \
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        sudo \
         build-essential \
+        sudo \
         curl \
         git \
         wget \
         p7zip-full \
         python3 \
+        python3-distutils \
+        python3-dev \
+        python3-git \
+        python3-yaml \
         binfmt-support \
-        qemu \
+        qemu-system \
+        qemu-user \
         qemu-user-static \
         sudo \
+        file \
+        fdisk \
+        btrfs-progs \
+        jq \
         zip \
+        xz-utils \
         lsof \
-    && rm -rf /var/lib/apt/lists/*
+        f2fs-tools \
+  && rm -rf /var/lib/apt/lists/* \
+  && apt -qyy clean
 
 RUN ln -s /CustomPiOS/nightly_build_scripts/custompios_nightly_build /usr/bin/build
 RUN ln -s /usr/bin/python3 /usr/bin/python

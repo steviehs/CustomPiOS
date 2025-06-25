@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 function die () {
-    echo >&2 "$@"
+    echo_red "$@" >&2
     exit 1
 }
 
@@ -150,10 +150,13 @@ function unpack() {
 }
 
 function detach_all_loopback(){
+  image_name=$1
   # Cleans up mounted loopback devices from the image name
   # NOTE: it might need a better way to grep for the image name, its might clash with other builds
   for img in $(losetup  | grep $1 | awk '{ print $1 }' );  do
-    if [[ -f $img ]]; then
+    # test if the image name is a substring
+    if [ "${img}" != "$(printf '%s' "${img}" | sed 's/'"${image_name}"'//g')" ] && ([ -f "${img}" ] || [ -b "${img}" ]); then
+      echo "freeing up $img"
     	losetup -d $img
     fi
   done
@@ -161,7 +164,7 @@ function detach_all_loopback(){
 
 function test_for_image(){
   if [ ! -f "$1" ]; then
-    echo "Warning, can't see image file: $image"
+    echo_red "Warning, can't see image file: $image"
   fi
 }
 
@@ -171,36 +174,44 @@ function mount_image() {
   mount_path=$3
   
   boot_mount_path=boot
+
   if [ "$#" -gt 3 ]
   then
     boot_mount_path=$4
   fi
-  
-  echo $2
+
+  if [ "$#" -gt 4 ] && [ "$5" != "" ]
+  then
+    boot_partition=$5
+  else
+    boot_partition=1
+  fi
 
   # dump the partition table, locate boot partition and root partition
-  boot_partition=1
-  fdisk_output=$(sfdisk -d $image_path)
-  boot_offset=$(($(echo "$fdisk_output" | grep "$image_path$boot_partition" | awk '{print $4-0}') * 512))
-  root_offset=$(($(echo "$fdisk_output" | grep "$image_path$root_partition" | awk '{print $4-0}') * 512))
+  fdisk_output=$(sfdisk --json "${image_path}" )
+  boot_offset=$(($(jq ".partitiontable.partitions[] | select(.node == \"$image_path$boot_partition\").start" <<< ${fdisk_output}) * 512))
+  root_offset=$(($(jq ".partitiontable.partitions[] | select(.node == \"$image_path$root_partition\").start" <<< ${fdisk_output}) * 512))
 
-  echo "Mounting image $image_path on $mount_path, offset for boot partition is $boot_offset, offset for root partition is $root_offset"
+  echo_green "Mounting image $image_path on $mount_path, offset for boot partition is $boot_offset, offset for root partition is $root_offset"
 
   # mount root and boot partition
   
   detach_all_loopback $image_path
-  echo "Mounting root parition"
+  echo_green "Mounting root partition"
   sudo losetup -f
   sudo mount -o loop,offset=$root_offset $image_path $mount_path/
   if [[ "$boot_partition" != "$root_partition" ]]; then
-	  echo "Mounting boot partition"
+	  echo_green "Mounting boot partition"
 	  sudo losetup -f
 	  sudo mount -o loop,offset=$boot_offset,sizelimit=$( expr $root_offset - $boot_offset ) "${image_path}" "${mount_path}"/"${boot_mount_path}"
   fi
   sudo mkdir -p $mount_path/dev/pts
+  sudo mkdir -p $mount_path/proc
+  sudo mkdir -p $mount_path/sys
   sudo mount -o bind /dev $mount_path/dev
   sudo mount -o bind /dev/pts $mount_path/dev/pts
-  sudo mount -o bind /proc $mount_path/proc
+  sudo mount -o bind,ro /proc $mount_path/proc
+  sudo mount -o bind,ro /sys $mount_path/sys
 }
 
 function unmount_image() {
@@ -216,7 +227,7 @@ function unmount_image() {
   then
     for pid in $(sudo lsof -t $mount_path)
     do
-      echo "Killing process $(ps -p $pid -o comm=) with pid $pid..."
+      echo_green "Killing process $(ps -p $pid -o comm=) with pid $pid..."
       sudo kill -9 $pid
     done
   fi
@@ -234,7 +245,7 @@ function unmount_image() {
   # Also we sort in reverse to get the deepest mounts first.
   for m in $(sudo mount | grep $mount_path | awk -F " on " '{print $2}' | awk '{print $1}' | sort -r)
   do
-    echo "Unmounting $m..."
+    echo_green "Unmounting $m..."
     sudo umount $m
   done
 }
@@ -271,8 +282,8 @@ function enlarge_ext() {
   partition=$2
   size=$3
 
-  echo "Adding $size MB to partition $partition of $image"
-  start=$(sfdisk -d $image | grep "$image$partition" | awk '{print $4-0}')
+  echo_green "Adding $size MB to partition $partition of $image"
+  start=$(sfdisk --json "${image}" | jq ".partitiontable.partitions[] | select(.node ==  \"$image$partition\").start")
   offset=$(($start*512))
   dd if=/dev/zero bs=1M count=$size >> $image
   fdisk $image <<FDISK
@@ -291,13 +302,39 @@ FDISK
   test_for_image $image
   LODEV=$(losetup -f --show -o $offset $image)
   trap 'losetup -d $LODEV' EXIT
-
-  e2fsck -fy $LODEV
-  resize2fs -p $LODEV
+  if ( file -Ls $LODEV | grep -qi ext ); then
+      e2fsck -fy $LODEV
+      resize2fs -p $LODEV
+  elif ( file -Ls $LODEV | grep -qi f2fs ); then
+    fsck.f2fs -f $LODEV
+      resize.f2fs $LODEV
+  elif ( file -Ls $LODEV | grep -qi btrfs ); then
+    btrfs check --repair $LODEV
+    if ( mount | grep $LODEV ); then
+      TDIR=$(mount | grep $LODEV)
+      btrfs filesystem resize max "$TDIR"
+    else
+      # btrfs needs to be mounted in order to resize
+      TDIR=$(mktemp -d /tmp/CPiOS_XXXX)
+      # the following two lines should be pointless, but I had many iterations
+      # where the mount below fails, but adding these two lines (which were
+      # intended for debugging, really) seemed to add enough delay (??) to
+      # make it work
+      umount $LODEV || true
+      ls -l "$TDIR" > /dev/null
+      if mount $LODEV "$TDIR" ; then
+        btrfs filesystem resize max "$TDIR"
+        umount $LODEV
+      fi
+      rmdir "$TDIR"
+    fi
+  else
+    echo_red "Could not determine the filesystem of the volume, output is: $(file -Ls $LODEV)"
+  fi
   losetup -d $LODEV
 
   trap - EXIT
-  echo "Resized parition $partition of $image to +$size MB"
+  echo_green "Resized partition $partition of $image to +$size MB"
 }
 
 function shrink_ext() {
@@ -308,8 +345,8 @@ function shrink_ext() {
   partition=$2
   size=$3
   
-  echo "Resizing file system to $size MB..."
-  start=$(sfdisk -d $image | grep "$image$partition" | awk '{print $4-0}')
+  echo_green "Resizing file system to $size MB..."
+  start=$(sfdisk --json "${image}" | jq ".partitiontable.partitions[] | select(.node ==  \"$image$partition\").start")
   offset=$(($start*512))
 
   detach_all_loopback $image
@@ -322,14 +359,14 @@ function shrink_ext() {
   e2ftarget_bytes=$(($size * 1024 * 1024))
   e2ftarget_blocks=$(($e2ftarget_bytes / 512 + 1))
 
-  echo "Resizing file system to $e2ftarget_blocks blocks..."
+  echo_green "Resizing file system to $e2ftarget_blocks blocks..."
   resize2fs $LODEV ${e2ftarget_blocks}s
   losetup -d $LODEV
   trap - EXIT
 
   new_end=$(($start + $e2ftarget_blocks))
 
-  echo "Resizing partition to end at $start + $e2ftarget_blocks = $new_end blocks..."
+  echo_green "Resizing partition to end at $start + $e2ftarget_blocks = $new_end blocks..."
   fdisk $image <<FDISK
 p
 d
@@ -344,11 +381,11 @@ w
 FDISK
 
   new_size=$((($new_end + 1) * 512))
-  echo "Truncating image to $new_size bytes..."
+  echo_green "Truncating image to $new_size bytes..."
   truncate --size=$new_size $image
   fdisk -l $image
 
-  echo "Resizing filesystem ..."
+  echo_green "Resizing filesystem ..."
   detach_all_loopback $image
   test_for_image $image
   LODEV=$(losetup -f --show -o $offset $image)
@@ -365,11 +402,11 @@ function minimize_ext() {
   partition=$2
   buffer=$3
 
-  echo "Resizing partition $partition on $image to minimal size + $buffer MB"
-  partitioninfo=$(sfdisk -d $image | grep "$image$partition")
+  echo_green "Resizing partition $partition on $image to minimal size + $buffer MB"
+  fdisk_output=$(sfdisk --json "${image_path}" )
   
-  start=$(echo $partitioninfo | awk '{print $4-0}')
-  e2fsize_blocks=$(echo $partitioninfo | awk '{print $6-0}')
+  start=$(jq ".partitiontable.partitions[] | select(.node == \"$image_path$partition\").start" <<< ${fdisk_output})
+  e2fsize_blocks=$(jq ".partitiontable.partitions[] | select(.node == \"$image_path$partition\").size" <<< ${fdisk_output})
   offset=$(($start*512))
 
   detach_all_loopback $image
@@ -377,34 +414,42 @@ function minimize_ext() {
   LODEV=$(losetup -f --show -o $offset $image)
   trap 'losetup -d $LODEV' EXIT
 
-  e2fsck -fy $LODEV
-  e2fblocksize=$(tune2fs -l $LODEV | grep -i "block size" | awk -F: '{print $2-0}')
-  e2fminsize=$(resize2fs -P $LODEV 2>/dev/null | grep -i "minimum size" | awk -F: '{print $2-0}')
+  if ( file -Ls $LODEV | grep -qi ext ); then
+    e2fsck -fy $LODEV
+    resize2fs -p $LODEV
+      
+    e2fblocksize=$(tune2fs -l $LODEV | grep -i "block size" | awk -F: '{print $2-0}')
+    e2fminsize=$(resize2fs -P $LODEV 2>/dev/null | grep -i "minimum size" | awk -F: '{print $2-0}')
 
-  e2fminsize_bytes=$(($e2fminsize * $e2fblocksize))
-  e2ftarget_bytes=$(($buffer * 1024 * 1024 + $e2fminsize_bytes))
-  e2fsize_bytes=$((($e2fsize_blocks - 1) * 512))
+    e2fminsize_bytes=$(($e2fminsize * $e2fblocksize))
+    e2ftarget_bytes=$(($buffer * 1024 * 1024 + $e2fminsize_bytes))
+    e2fsize_bytes=$((($e2fsize_blocks - 1) * 512))
 
-  e2fminsize_mb=$(($e2fminsize_bytes / 1024 / 1024))
-  e2fminsize_blocks=$(($e2fminsize_bytes / 512 + 1))
-  e2ftarget_mb=$(($e2ftarget_bytes / 1024 / 1024))
-  e2ftarget_blocks=$(($e2ftarget_bytes / 512 + 1))
-  e2fsize_mb=$(($e2fsize_bytes / 1024 / 1024))
-  
-  size_offset_mb=$(($e2fsize_mb - $e2ftarget_mb))
-  
-  losetup -d $LODEV
+    e2fminsize_mb=$(($e2fminsize_bytes / 1024 / 1024))
+    e2fminsize_blocks=$(($e2fminsize_bytes / 512 + 1))
+    e2ftarget_mb=$(($e2ftarget_bytes / 1024 / 1024))
+    e2ftarget_blocks=$(($e2ftarget_bytes / 512 + 1))
+    e2fsize_mb=$(($e2fsize_bytes / 1024 / 1024))
+    
+    size_offset_mb=$(($e2fsize_mb - $e2ftarget_mb))
+    
+    
+    echo_green "Actual size is $e2fsize_mb MB ($e2fsize_blocks blocks), Minimum size is $e2fminsize_mb MB ($e2fminsize file system blocks, $e2fminsize_blocks blocks)"
+    echo_green "Resizing to $e2ftarget_mb MB ($e2ftarget_blocks blocks)"
+    
+    if [ $size_offset_mb -gt 0 ]; then
+          echo_green "Partition size is bigger then the desired size, shrinking"
+          shrink_ext $image $partition $(($e2ftarget_mb - 1)) # -1 to compensat rounding mistakes
+    elif [ $size_offset_mb -lt 0 ]; then
+      echo_green "Partition size is lower then the desired size, enlarging"
+          enlarge_ext $image $partition $((-$size_offset_mb + 1)) # +1 to compensat rounding mistakes
+    fi
 
-  echo "Actual size is $e2fsize_mb MB ($e2fsize_blocks blocks), Minimum size is $e2fminsize_mb MB ($e2fminsize file system blocks, $e2fminsize_blocks blocks)"
-  echo "Resizing to $e2ftarget_mb MB ($e2ftarget_blocks blocks)" 
-  
-  if [ $size_offset_mb -gt 0 ]; then
-	echo "Partition size is bigger then the desired size, shrinking"
-	shrink_ext $image $partition $(($e2ftarget_mb - 1)) # -1 to compensat rounding mistakes
-  elif [ $size_offset_mb -lt 0 ]; then
-    echo "Partition size is lower then the desired size, enlarging"
-	enlarge_ext $image $partition $((-$size_offset_mb + 1)) # +1 to compensat rounding mistakes
+  elif ( file -Ls $LODEV | grep -qi btrfs ); then
+    echo_red "WARNING: minimize_ext not implemented for btrfs"
+    btrfs check --repair $LODEV
   fi
+
 }
 
 # Skip apt update if Cache not older than 1 Hour.
@@ -458,7 +503,7 @@ function check_install_pkgs() {
   if [ "${#missing_pkgs[@]}" -ne 0 ]; then
       echo_red "${#missing_pkgs[@]} missing Packages..."
       echo_green "Installing ${missing_pkgs[@]}"
-      apt install --yes "${missing_pkgs[@]}"
+      apt-get install --yes "${missing_pkgs[@]}"
   else
       echo_green "No Dependencies missing... [SKIPPED]"
   fi
@@ -480,7 +525,7 @@ function systemctl_if_exists() {
     if hash systemctl 2>/dev/null; then
         systemctl "$@"
     else
-        echo "no systemctl, not running"
+        echo_red "no systemctl, not running"
     fi
 }
 
@@ -516,4 +561,105 @@ function set_config_var() {
   # Set a value for a specific variable in /boot/config.txt
   # See https://github.com/RPi-Distro/raspi-config/blob/master/raspi-config#L231
   raspi-config nonint set_config_var $1 $2 /boot/config.txt
+}
+
+
+function load_module_config() {
+  # Takes a comma seprated modules list, and exports the environment variables for it
+  MODULES_AFTER=$1
+  for module in $(echo "${MODULES_AFTER}" | tr "," "\n")
+  do
+      if [ -d "${DIST_PATH}/modules/${module}" ]; then
+          export MODULE_PATH="${DIST_PATH}/modules/${module}"
+      elif   [ -d "${CUSTOM_PI_OS_PATH}/modules/${module}" ]; then
+          export MODULE_PATH="${CUSTOM_PI_OS_PATH}/modules/${module}"
+      fi
+      
+      echo "loading $module config at ${MODULE_PATH}/config"
+      if [ -f "${MODULE_PATH}/config" ]; then
+          source "${MODULE_PATH}/config"
+      else
+          echo "WARNING: module ${module} has no config file"
+      fi
+      
+      ###############################################################################
+      # Print and export the final configuration.
+
+      echo "================================================================"
+      echo "Using the following config:"
+      module_up=${module^^} module_up=${module_up//-/_}_
+      
+      # Export variables that satisfy the $module_up prefix
+      while IFS= read -r var; do export "$var"; echo "$var"; done < <(compgen -A variable "$module_up")
+
+      echo "================================================================"
+  done
+}
+
+function chroot_correct_qemu() {
+    local host_arch="$1"
+    local target_arch="$2"
+    local chroot_script="$3"
+    local custom_pi_os_path="$4"
+
+    # Validate inputs
+    if [[ -z "$host_arch" ]] || [[ -z "$target_arch" ]]; then
+        echo "Error: Missing required arguments"
+        echo "Usage: setup_qemu_chroot host_arch target_arch chroot_script custom_pi_os_path"
+        return 1
+    fi 
+
+    # Copy required scripts
+    cp "$chroot_script" chroot_script
+    chmod 755 chroot_script
+    cp "${custom_pi_os_path}/common.sh" common.sh
+    chmod 755 common.sh
+
+    # Set up QEMU if needed
+    if [[ "$host_arch" != "armv7l" ]] || [[ "$host_arch" != "aarch64" ]]; then
+        if [[ "$target_arch" == "armv7l" ]] || [[ "$target_arch" == "armhf" ]]; then
+            if grep -q gentoo /etc/os-release; then
+                ROOT="$(realpath .)" emerge --usepkgonly --oneshot --nodeps qemu
+            else
+                cp "$(which qemu-arm-static)" usr/bin/qemu-arm-static
+            fi
+        elif [[ "$target_arch" == "aarch64" ]] || [[ "$target_arch" == "arm64" ]]; then
+            if grep -q gentoo /etc/os-release; then
+                ROOT="$(realpath .)" emerge --usepkgonly --oneshot --nodeps qemu
+            else
+                cp "$(which qemu-aarch64-static)" usr/bin/qemu-aarch64-static
+            fi
+        fi
+    fi
+
+    # Execute chroot with appropriate QEMU setup
+    if [[ "$host_arch" != "armv7l" ]] && [[ "$host_arch" != "aarch64" ]] && [[ "$host_arch" != "arm64" ]]; then
+        echo "Detected we are on a non-arm device"
+        if [[ "$target_arch" == "armv7l" ]] || [[ "$target_arch" == "armhf" ]]; then
+            echo "Building on non-ARM device a armv7l system, using qemu-arm-static"
+            if grep -q gentoo /etc/os-release; then
+                echo "Building on gentoo non-ARM device a armv7l system, using qemu-arm"
+                chroot . usr/bin/qemu-arm /bin/bash /chroot_script
+            else
+                echo "Using normal non-arm qemu for armv7l"
+                chroot . usr/bin/qemu-arm-static /bin/bash /chroot_script
+            fi
+        elif [[ "$target_arch" == "aarch64" ]] || [[ "$target_arch" == "arm64" ]]; then
+            echo "Building on non-ARM device a aarch64/arm64 system, using qemu-aarch64-static"
+            if grep -q gentoo /etc/os-release; then
+                chroot . usr/bin/qemu-aarch64 /bin/bash /chroot_script
+            else
+                chroot . usr/bin/qemu-aarch64-static /bin/bash /chroot_script
+            fi
+        else
+            echo "Unknown arch, building on: $host_arch image: $target_arch"
+            return 1
+        fi
+    elif { [[ "$target_arch" == "armv7l" ]] || [[ "$target_arch" == "armhf" ]]; } && [[ "$host_arch" != "armv7l" ]]; then
+        echo "Building on aarch64/arm64 device a armv7l system, using qemu-arm-static"
+        chroot . usr/bin/qemu-arm-static /bin/bash /chroot_script
+    else
+        echo "Building on ARM device a armv7l/aarch64/arm64 system, not using qemu"
+        chroot . /bin/bash /chroot_script
+    fi
 }

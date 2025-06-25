@@ -5,6 +5,8 @@ CustomPiOS
 .. :scale: 50 %
 .. :alt: CustomPiOS logo
 
+.. class:: center
+
 A `Raspberry Pi <http://www.raspberrypi.org/>`_ and other ARM devices distribution builder. CustomPiOS opens an already existing image, modifies it and repackages the image ready to ship.
 
 This repository contains the source script to generate a distribution out of an existing `Raspbian <http://www.raspbian.org/>`_ distro image, or Armbian devices.
@@ -50,20 +52,23 @@ Developing
 Requirements
 ~~~~~~~~~~~~
 
-#. `qemu-arm-static <http://packages.debian.org/sid/qemu-user-static>`_
+#. `qemu-arm-static <http://packages.debian.org/sid/qemu-user-static>`_ or gentoo qemu with static USE
 #. Downloaded `Raspbian <http://www.raspbian.org/>`_ image.
 #. root privileges for chroot
 #. Bash
+#. jq
 #. git
 #. realpath
+#. file
 #. sudo (the script itself calls it, running as root without sudo won't work)
 #. p7zip-full
 #. Python 3.2+
+#. GitPython
 
 Known to work building configurations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 1. Using the `CustomPiOS docker image <https://hub.docker.com/r/guysoft/custompios>`_
-2. Linux (Ubuntu / Debian etc)
+2. Linux (Ubuntu / Debian / Gentoo etc)
 3. OS X -  `See this thread for information <https://github.com/guysoft/OctoPi/issues/388#issuecomment-316327106>`_
 
 
@@ -151,12 +156,27 @@ Usage
 #. Run ``src/build`` as root.
 #. The final image will be created at the ``src/workspace``
 
+Testing
+-------
+
+You can run unit tests to test CustomPiOS if you have changed it by running::
+
+    make test
+
+You can add more tests to the ``tests`` folder.
+
+Community
+--------
+|discord|
+
+.. |discord| image:: https://img.shields.io/discord/1119337877734699018?label=discord&logo=discord&logoColor=white
+   :target: https://discord.gg/rK72VZVt
 
 List of Distributions using CustomPiOS
 --------------------------------------
 
 * `OctoPi <https://octopi.octoprint.org/>`_ - The ready-to-go Raspberry Pi image with OctoPrint
-* `FarmPi <https://farmpi.kevenaar.name/>`_ - An Ubuntu ARM 64bit Raspbery Pi image running `OctoFarm <https://octofarm.net/>`_
+* `FarmPi <https://farmpi.kevenaar.name/>`_ - An Ubuntu ARM 64bit Raspberry Pi image running `OctoFarm <https://octofarm.net/>`_
 * `FullPageOS <https://github.com/guysoft/FullPageOS>`_ - A Raspberry Pi distro to display a full page browser on boot
 * `Zynthian <http://zynthian.org/>`_ - Open Synth Platform
 * `ElectricSheepPi <https://github.com/guysoft/ElectricSheepPi>`_ - A Raspberry Pi distribution to run Electric Sheep digital art
@@ -167,9 +187,13 @@ List of Distributions using CustomPiOS
 * `HotSpotOS <https://github.com/guysoft/HostSpotOS>`_ - Makes a Raspberry Pi start a hotspot, if no wifi was found to connect to
 * `MtigOS <https://github.com/guysoft/MtigOS>`_ - Distro that lets you receive, store and graph sensor information from ESP8266 chips. It uses and MTIG stack: Mosquitto, Telegraf, InfluxDB and Grafana which are all pre-configured to work together. They automatically update using Docker.
 * `Tilti-Pi <https://github.com/myoung34/tilty-pi>`_ - Distro that lets you submit BLE data for the  `tilt hydrometer <https://tilthydrometer.com/>`_ via the `tilty <https://github.com/myoung34/tilty>`_ package and a built in `dashboard <https://github.com/myoung34/tilty-dashboard>`_
-* `MainsailOS <https://github.com/raymondh2/MainsailOS>`_ - Distro that packages the `Mainsail <https://github.com/meteyou/mainsail>`_ web UI, the `Moonraker <https://github.com/Arksine/moonraker>`_ API, and the `Klipper <https://github.com/KevinOConnor/klipper>`_ 3D printer firmware in an easy to package.
+* `MainsailOS <https://github.com/mainsail-crew/mainsailos>`_ - Distro that packages the `Mainsail <https://github.com/mainsail-crew/mainsail>`_ web UI, the `Moonraker <https://github.com/Arksine/moonraker>`_ API, and the `Klipper <https://github.com/klipper3d/klipper>`_ 3D printer firmware in an easy to package.
 * `UbuntuDockerPi <https://github.com/guysoft/UbuntuDockerPi>`_ - Distro ships with Ubuntu ARM 64bit Docker and docker-compose ready to build stuff for arm64v8/aarch64 or host whatever you like.
 * `FluiddPi <https://github.com/cadriel/fluiddpi>`_ - Distro that packages `Fluidd <https://github.com/cadriel/fluidd>`_, `Moonraker <https://github.com/Arksine/moonraker>`_, and `Klipper <https://github.com/KevinOConnor/klipper>`_ into the ultimate 3D printer firmware package.
 * `My Naturewatch Camera <https://github.com/interactionresearchstudio/NaturewatchCameraServer>`_ - A Python / OpenCV camera server to stream Pi camera content to a remote client through a website.
+* `PiFireOS <https://github.com/calonmerc/PiFireOS>`_ - Distro for pellet grill/smoker control, running `PiFire <https://nebhead.github.io/PiFire>`_.
+* `MonsterPi <https://docs.fdm-monster.net/guides/monsterpi>`_ - An Ubuntu ARM 64bit Raspberry Pi image running `FDM Monster <https://fdm-monster.net/>`_. This 3D Print server will help you connect 200+ OctoPrints together while providing a strong, professional workflow.
+* `AllStarLink <https://allstarlink.org>`_ - AllStarLink is a network of Amateur Radio repeaters, remote base stations and hot spots accessible to each other via Voice over Internet Protocol. The ASL3 Pi Appliance uses CustomPiOS
+* `LEDPotato <https://github.com/guysoft/LEDPotato>`_ - A Le Potato AML-S905X-CC distrubtion that controls ws2812 LEDs over uart right on boot 
 
 Code contribution would be appreciated!

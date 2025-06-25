@@ -9,18 +9,37 @@ set -ex
 source /common.sh
 install_cleanup_trap
 
-if [ "${BASE_DISTRO}" == "raspbian" ]; then
-        curl -sSL get.docker.com | sh
+if [ "${BASE_DISTRO}" == "raspbian" ] || [ "${BASE_DISTRO}" == "raspios64" ]; then
+    apt-get update
+    apt-get install -y docker.io
 elif [ "${BASE_DISTRO}" == "ubuntu" ]; then
+    apt-get update
+    apt-get install -y curl
     if [ "${BASE_ARCH}" == "aarch64" ] || [ "${BASE_ARCH}" == "arm64" ]; then
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-        add-apt-repository "deb [arch=arm64] https://download.docker.com/linux/ubuntu disco stable"
+        add-apt-repository --yes "deb [arch=arm64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
     else
         echo "Error, not implemented Ubuntu 32bit"
 	exit 1
     fi
-    apt-get update
+    apt-get update --allow-releaseinfo-change
     apt-get install -y docker-ce
+    if [ "${BASE_DISTRO}" == "ubuntu" ]; then
+        # enable proposed https://bugs.launchpad.net/ubuntu/+source/linux-raspi/+bug/1955353/comments/9
+        cat <<EOF >/etc/apt/sources.list.d/ubuntu-jammy-proposed.list
+# Enable Ubuntu proposed archive
+deb http://ports.ubuntu.com/ubuntu-ports $(lsb_release -cs)-proposed restricted main multiverse universe
+EOF
+        apt-get update
+        apt-get install -y flash-kernel
+	rm /etc/apt/sources.list.d/ubuntu-jammy-proposed.list
+	apt-get update
+        apt-get install -y linux-modules-extra-raspi
+
+        # Fix cgroup bug https://github.com/docker/for-linux/issues/219
+        # Solution from https://sleeplessbeastie.eu/2021/11/19/how-to-downgrade-cgroup-version-on-dietpi/
+        sed -i -e "1 s/$/ systemd.unified_cgroup_hierarchy=0/" /boot/firmware/cmdline.txt
+    fi
 fi
 
 if [ "${DOCKER_ADD_USER_TO_GROUP}" == "yes" ]; then
@@ -28,11 +47,7 @@ if [ "${DOCKER_ADD_USER_TO_GROUP}" == "yes" ]; then
 fi
 
 if [ "${DOCKER_COMPOSE}" == "yes" ]; then
-    apt-get install -y python3 python3-distutils python3-dev python3-testresources gcc libffi-dev build-essential libssl-dev cargo
-    # Docker-compose
-    wget https://bootstrap.pypa.io/get-pip.py -O - | python3
-    pip3 install --ignore-installed PyYAML
-    pip3 install docker-compose
+    apt-get install -y python3-compose
 fi
 
 

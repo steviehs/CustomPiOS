@@ -7,18 +7,22 @@ set -e
 
 export LC_ALL=C
 
-source ${CUSTOM_PI_OS_PATH}/common.sh
+source "${CUSTOM_PI_OS_PATH}"/common.sh
+
+echo_green -e "\nBUILD STARTED @ $(date)!\n"
 
 function execute_chroot_script() {
 
   # In docker, these extra commands are required to enable this black-magic
-  if [ -f /.dockerenv ] && [ "$(arch)" != "armv7l" ] && [ "$(arch)" != "aarch64" ] ; then
-    if [ "$BASE_ARCH" == "armv7l" ]; then
+  if [ -f /.dockerenv ] && [ "$(uname -m)" != "armv7l" ] && [ "$(uname -m)" != "aarch64" ] ; then
+    if [ "$BASE_ARCH" == "armv7l" ] || [ "$BASE_ARCH" == "armhf" ]; then
       update-binfmts --enable qemu-arm
     elif [ "$BASE_ARCH" == "aarch64" ] || [ "$BASE_ARCH" == "arm64" ]; then
       update-binfmts --enable qemu-aarch64
     fi
-    mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
+    if ! mount | grep -q "/proc/sys/fs/binfmt_misc"; then
+        mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true
+    fi
   fi
   #move filesystem files
   if [ -d "$1/filesystem" ]; then
@@ -27,11 +31,19 @@ function execute_chroot_script() {
 
   #black magic of qemu-arm-static
   # cp `which qemu-arm-static` usr/bin
-  if [ "$(arch)" != "armv7l" ] && [ "$(arch)" != "aarch64" ] ; then
-    if [ "$BASE_ARCH" == "armv7l" ]; then
-      cp `which qemu-arm-static` usr/bin/qemu-arm-static
+  if [ "$(uname -m)" != "armv7l" ] || [ "$(uname -m)" != "aarch64" ] ; then
+    if [ "$BASE_ARCH" == "armv7l" ] || [ "$BASE_ARCH" == "armhf" ]; then
+      if (grep -q gentoo /etc/os-release);then
+        ROOT="`realpath .`" emerge --usepkgonly --oneshot --nodeps qemu
+      else
+        cp `which qemu-arm-static` usr/bin/qemu-arm-static
+      fi
     elif [ "$BASE_ARCH" == "aarch64" ] || [ "$BASE_ARCH" == "arm64" ]; then
-      cp `which qemu-aarch64-static` usr/bin/qemu-aarch64-static
+      if (grep -q gentoo /etc/os-release);then
+        ROOT="`realpath .`" emerge --usepkgonly --oneshot --nodeps qemu
+      else
+        cp `which qemu-aarch64-static` usr/bin/qemu-aarch64-static
+      fi
     fi
   fi
   
@@ -39,19 +51,7 @@ function execute_chroot_script() {
   chmod 755 chroot_script
   cp "${CUSTOM_PI_OS_PATH}"/common.sh common.sh
   chmod 755 common.sh
-  
-  if [ "$(arch)" != "armv7l" ] && [ "$(arch)" != "aarch64" ] && [ "$(arch)" != "arm64" ] ; then
-    if [ "$BASE_ARCH" == "armv7l" ]; then
-      echo "Building on non-ARM device a armv7l system, using qemu-arm-static"
-      chroot . usr/bin/qemu-arm-static /bin/bash /chroot_script
-    elif [ "$BASE_ARCH" == "aarch64" ] || [ "$BASE_ARCH" == "arm64" ]; then
-      echo "Building on non-ARM device a aarch64/arm64 system, using qemu-aarch64-static"
-      chroot . usr/bin/qemu-aarch64-static /bin/bash /chroot_script
-    fi
-  else
-    echo "Building on ARM device a armv7l/aarch64/arm64 system, not using qemu"
-    chroot . /bin/bash /chroot_script
-  fi
+  chroot_correct_qemu "$(uname -m)" "$BASE_ARCH" "$2" "${CUSTOM_PI_OS_PATH}"
   
   # Handle exported items
   if [ -d "custompios_export" ]; then
@@ -73,8 +73,24 @@ function execute_chroot_script() {
   fi
 }
 
+# check prerequisites
+if [ -n "$BASE_IMAGE_ENLARGEROOT" ] || [ -n "$BASE_IMAGE_RESIZEROOT" ]; then
+    # resizing the root partition requires 'sfdisk' in our path
+    which sfdisk >/dev/null 2>/dev/null || \
+        die "'sfdisk' not found in PATH; did you mean to run the script as root?"
+fi
+
+
+# start!
+
+
 mkdir -p $BASE_WORKSPACE
 mkdir -p $BASE_MOUNT_PATH
+
+# This is already genrated at "build" sourced in "config", but copying here mostly for debug
+if [ -f "${EXTRA_BAORD_CONFIG}" ]; then
+  mv -v "${EXTRA_BAORD_CONFIG}" "${BASE_WORKSPACE}"/extra_board_config
+fi
 
 # Clean exported artifacts from other builds
 rm -rf "${BASE_WORKSPACE}"/*.tar.gz
@@ -83,12 +99,13 @@ install_cleanup_trap
 install_fail_on_error_trap
 unmount_image $BASE_MOUNT_PATH force || true
 
-pushd $BASE_WORKSPACE
+pushd "${BASE_WORKSPACE}"
   if [ -e *.img ]; then  
     rm *.img
   fi
   if [ ! -f "$BASE_ZIP_IMG" ] || [ "$BASE_ZIP_IMG" == "" ]; then
     echo "Error: could not find image: $BASE_ZIP_IMG"
+    echo "On CustomPiOS v2 you can provide -d to download the latest image of your board automatically"
     exit 1
   fi
   
@@ -113,7 +130,7 @@ pushd $BASE_WORKSPACE
   fi
 
   # mount root and boot partition
-  mount_image "${BASE_IMG_PATH}" "${BASE_ROOT_PARTITION}" "${BASE_MOUNT_PATH}" "${BASE_BOOT_MOUNT_PATH}"
+  mount_image "${BASE_IMG_PATH}" "${BASE_ROOT_PARTITION}" "${BASE_MOUNT_PATH}" "${BASE_BOOT_MOUNT_PATH}" "${BASE_BOOT_PARTITION}"
   if [ -n "$BASE_APT_CACHE" ] && [ "$BASE_APT_CACHE" != "no" ]
   then
     mkdir -p "$BASE_APT_CACHE"
@@ -147,7 +164,22 @@ pushd $BASE_WORKSPACE
     # execute the base chroot script
     ### execute_chroot_script $BASE_SCRIPT_PATH $BASE_CHROOT_SCRIPT_PATH
     CHROOT_SCRIPT=${BASE_WORKSPACE}/chroot_script
-    python3 ${CUSTOM_PI_OS_PATH}/execution_order.py "${MODULES}" ${CHROOT_SCRIPT}
+    MODULES_AFTER_PATH=${BASE_WORKSPACE}/modules_after
+    MODULES_BEFORE="${MODULES}"
+    ${CUSTOM_PI_OS_PATH}/custompios_core/execution_order.py "${MODULES}" "${CHROOT_SCRIPT}" "${MODULES_AFTER_PATH}" "${REMOTE_AND_META_CONFIG}"
+    if [ -f "${REMOTE_AND_META_CONFIG}" ]; then
+      echo "Sourcing remote and submodules config"
+      source "${REMOTE_AND_META_CONFIG}" ${@}
+
+      MODULES_AFTER=$(cat "${MODULES_AFTER_PATH}")
+      load_module_config "${MODULES_AFTER}"
+      
+    else
+      echo "No remote and submodules config detected"
+    fi
+    echo $ARMBIAN_CONFIG_TXT_FILE
+    # if you need anything from common running in execute_chroot_script, export it here
+    export -f chroot_correct_qemu
     export -f execute_chroot_script
     bash -x "${CHROOT_SCRIPT}"
     
@@ -172,7 +204,7 @@ pushd $BASE_WORKSPACE
   
   # unmount first boot, then root partition
   unmount_image $BASE_MOUNT_PATH
-  chmod 777 $BASE_IMG_PATH
+  chmod 644 $BASE_IMG_PATH
 
   if [ -n "$BASE_IMAGE_RESIZEROOT" ]
   then
@@ -181,4 +213,4 @@ pushd $BASE_WORKSPACE
   fi
 popd
 
-echo_green -e "\nBUILD SUCCEEDED!\n"
+echo_green -e "\nBUILD SUCCEEDED @ $(date)!\n"
